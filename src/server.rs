@@ -16,10 +16,7 @@ pub struct InterpreterServer {
     wrapper_path: Arc<PathBuf>,
 }
 
-#[turbomcp::server(
-    name = "liberado-python-interpreter-mcp",
-    version = "0.1.0"
-)]
+#[turbomcp::server(name = "liberado-python-interpreter-mcp", version = "0.1.0")]
 impl InterpreterServer {
     pub fn new(config: Config) -> Self {
         let config = Arc::new(config);
@@ -32,11 +29,7 @@ impl InterpreterServer {
     }
 
     #[tool("Execute Python code in a persistent REPL session. Variables, imports, and function definitions persist across calls within the same session. Omit session_id to create a new session; pass one from a previous response to continue.")]
-    async fn execute_python(
-        &self,
-        code: String,
-        session_id: Option<String>,
-    ) -> McpResult<String> {
+    async fn execute_python(&self, code: String, session_id: Option<String>) -> McpResult<String> {
         self.cleanup_expired().await;
 
         let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -45,14 +38,10 @@ impl InterpreterServer {
         let created = !sessions.contains_key(&sid);
 
         if created {
-            let session = sandbox::Session::new(
-                sid.clone(),
-                &self.wrapper_path,
-                &self.config,
-            )
-            .map_err(|e| {
-                McpError::internal(format!("Failed to create sandbox session: {e}"))
-            })?;
+            let session = sandbox::Session::new(sid.clone(), &self.wrapper_path, &self.config)
+                .map_err(|e| {
+                    McpError::internal(format!("Failed to create sandbox session: {e}"))
+                })?;
             sessions.insert(sid.clone(), session);
         }
 
@@ -71,16 +60,10 @@ impl InterpreterServer {
                 });
                 if let Some(m) = result.as_object_mut() {
                     if output.truncated_stdout {
-                        m.insert(
-                            constants::KEY_TRUNCATED_STDOUT.into(),
-                            true.into(),
-                        );
+                        m.insert(constants::KEY_TRUNCATED_STDOUT.into(), true.into());
                     }
                     if output.truncated_stderr {
-                        m.insert(
-                            constants::KEY_TRUNCATED_STDERR.into(),
-                            true.into(),
-                        );
+                        m.insert(constants::KEY_TRUNCATED_STDERR.into(), true.into());
                     }
                 }
                 Ok(result.to_string())
@@ -122,8 +105,7 @@ impl InterpreterServer {
     async fn read_file(&self, path: String) -> McpResult<String> {
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
-                let truncated =
-                    content.len() > constants::MAX_OUTPUT_BYTES;
+                let truncated = content.len() > constants::MAX_OUTPUT_BYTES;
                 let result = serde_json::json!({
                     constants::KEY_PATH: &path,
                     constants::KEY_CONTENT: &content
@@ -233,8 +215,7 @@ impl InterpreterServer {
 
     #[tool("Install a Python package using pip. Accepts any pip-compatible specifier (name, name==version, etc.).")]
     async fn install_package(&self, package: String) -> McpResult<String> {
-        let result =
-            sandbox::run_pip_install(&package, &self.config.system_python).await;
+        let result = sandbox::run_pip_install(&package, &self.config.system_python).await;
         Ok(serde_json::to_string(&result)
             .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()))
     }
@@ -254,8 +235,199 @@ impl InterpreterServer {
 
     async fn cleanup_expired(&self) {
         let mut sessions = self.sessions.lock().await;
-        sessions.retain(|_sid, session| {
-            session.idle_seconds() < constants::SESSION_IDLE_SECONDS
-        });
+        sessions.retain(|_sid, session| session.idle_seconds() < constants::SESSION_IDLE_SECONDS);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> Config {
+        Config {
+            bind_addr: "127.0.0.1:0".into(),
+            sandbox_enabled: false,
+            nsjail_path: "nsjail".into(),
+            sandbox_python: "python3".into(),
+            system_python: "python3".into(),
+            wrapper_path: std::env::current_dir().unwrap().join("sandbox/wrapper.py"),
+            sandbox_time_limit_secs: 300,
+            sandbox_memory_limit_bytes: 512 * 1024 * 1024,
+            log_level: "debug".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_tools_returns_all_nine() {
+        let server = InterpreterServer::new(test_config());
+        let tools = server.list_tools();
+        assert_eq!(tools.len(), 9);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"execute_python"));
+        assert!(names.contains(&"reset_python_session"));
+        assert!(names.contains(&"list_python_sessions"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(names.contains(&"install_package"));
+        assert!(names.contains(&"list_packages"));
+        assert!(names.contains(&"get_python_info"));
+    }
+
+    #[tokio::test]
+    async fn read_file_success() {
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+        let result = server
+            .call_tool("read_file", serde_json::json!({"path": "Cargo.toml"}), &ctx)
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        assert!(text.contains("liberado-python-interpreter-mcp"));
+        assert!(text.contains("content"));
+    }
+
+    #[tokio::test]
+    async fn read_file_missing() {
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+        let result = server
+            .call_tool(
+                "read_file",
+                serde_json::json!({"path": "/nonexistent/path/xyz"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        assert!(text.contains("error"));
+    }
+
+    #[tokio::test]
+    async fn write_and_read_file() {
+        let path = "/tmp/liberado_test_write.txt";
+        let _ = std::fs::remove_file(path);
+
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+
+        let result = server
+            .call_tool(
+                "write_file",
+                serde_json::json!({"path": path, "content": "hello from test"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        assert!(text.contains("\"written\":true"));
+
+        let result = server
+            .call_tool("read_file", serde_json::json!({"path": path}), &ctx)
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        assert!(text.contains("hello from test"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn edit_file_replaces_text() {
+        let path = "/tmp/liberado_test_edit.txt";
+        std::fs::write(path, "original line\n").unwrap();
+
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+
+        let result = server
+            .call_tool(
+                "edit_file",
+                serde_json::json!({
+                    "path": path,
+                    "find": "original",
+                    "replace": "modified",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        assert!(text.contains("\"replaced\":1"));
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert_eq!(content, "modified line\n");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn get_python_info_returns_valid_json() {
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+        let result = server
+            .call_tool("get_python_info", serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(value.get("version").is_some());
+    }
+
+    #[tokio::test]
+    async fn list_packages_returns_valid_json() {
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+        let result = server
+            .call_tool("list_packages", serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(value.get("returncode").is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_python_stateful_session() {
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+
+        let result = server
+            .call_tool(
+                "execute_python",
+                serde_json::json!({"code": "x = [1, 2, 3]"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let sid = value[constants::KEY_SESSION_ID]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(value[constants::KEY_CREATED].as_bool().unwrap());
+
+        let result = server
+            .call_tool(
+                "execute_python",
+                serde_json::json!({"code": "sum(x)", "session_id": &sid}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value[constants::KEY_CREATED], false);
+        let stdout = value[constants::PROTO_STDOUT].as_str().unwrap();
+        assert!(stdout.contains("6"));
+
+        let _ = server
+            .call_tool(
+                "reset_python_session",
+                serde_json::json!({"session_id": &sid}),
+                &ctx,
+            )
+            .await
+            .unwrap();
     }
 }

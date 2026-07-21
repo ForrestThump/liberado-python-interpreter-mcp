@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@888c2e1a69ab0d4330cbf0af1ecc7b68f368cc1f # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+      - run: cargo check --locked
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@888c2e1a69ab0d4330cbf0af1ecc7b68f368cc1f # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@888c2e1a69ab0d4330cbf0af1ecc7b68f368cc1f # stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@888c2e1a69ab0d4330cbf0af1ecc7b68f368cc1f # stable
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+      - run: cargo test --locked
+
+  coverage:
+    name: coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: dtolnay/rust-toolchain@888c2e1a69ab0d4330cbf0af1ecc7b68f368cc1f # stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@374b1b7e7fbd68b2ed9ad2ba8b5857b865d20ede # cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --locked --lcov --output-path lcov.info
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85d4521a0e5a3 # v2
+        with:
+          file: lcov.info

@@ -21,6 +21,7 @@ pub const ENV_NSJAIL_PATH: &str = "NSJAIL_PATH";
 pub const ENV_SANDBOX_PYTHON: &str = "SANDBOX_PYTHON";
 pub const ENV_SYSTEM_PYTHON: &str = "SYSTEM_PYTHON";
 pub const ENV_WRAPPER_PATH: &str = "LIBERADO_WRAPPER_PATH";
+pub const ENV_SANDBOX_ENABLED: &str = "LIBERADO_SANDBOX_ENABLED";
 pub const ENV_LOG_LEVEL: &str = "RUST_LOG";
 
 pub const PROTO_CMD: &str = "cmd";

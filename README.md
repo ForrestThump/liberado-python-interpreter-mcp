@@ -101,6 +101,15 @@ Registered in OpenClaw and LibreChat as `liberado-python-interpreter-mcp` (strea
 | `LIBERADO_WRAPPER_PATH` | `sandbox/wrapper.py` | Path to the sandbox wrapper script |
 | `LIBERADO_SANDBOX_TIME_LIMIT` | `300` | Sandbox time limit in seconds |
 | `LIBERADO_SANDBOX_MEMORY_LIMIT` | `536870912` | Sandbox memory limit in bytes (512 MB) |
+| `LIBERADO_SANDBOX_ENABLED` | `1` | Enable nsjail sandbox (`0`/`false`/`no` disables, runs Python directly) |
+
+## Running Without Sandbox
+
+Set `LIBERADO_SANDBOX_ENABLED=0` to skip nsjail and run Python directly via subprocess. Useful for local development without root. The server also auto-falls back to unsafe mode if nsjail is missing or unavailable.
+
+```sh
+LIBERADO_SANDBOX_ENABLED=0 cargo run
+```
 
 ## License
 

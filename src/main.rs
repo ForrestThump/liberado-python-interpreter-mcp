@@ -1,9 +1,5 @@
-mod server;
-
-use server::InterpreterServer;
+use liberado_python_interpreter_mcp::{config::Config, constants, server::InterpreterServer};
 use turbomcp::prelude::*;
-
-use liberado_python_interpreter_mcp::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,14 +15,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         "{} listening on {}",
-        liberado_python_interpreter_mcp::constants::SERVER_NAME,
+        constants::SERVER_NAME,
         config.bind_addr,
     );
+
+    let bind_addr = config.bind_addr.clone();
 
     InterpreterServer::new(config)
         .builder()
         .allow_any_origin(true)
-        .transport(Transport::http(&config.bind_addr))
+        .transport(Transport::http(&bind_addr))
         .serve()
         .await?;
 

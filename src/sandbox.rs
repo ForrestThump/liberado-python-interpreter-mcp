@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -23,7 +22,7 @@ pub enum SessionError {
     Serde(#[from] serde_json::Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct ExecutionOutput {
     pub stdout: String,
     pub stderr: String,
@@ -32,8 +31,8 @@ pub struct ExecutionOutput {
     pub truncated_stderr: bool,
 }
 
+#[derive(Debug)]
 pub struct Session {
-    #[allow(dead_code)]
     pub session_id: String,
     #[allow(dead_code)]
     work_dir: tempfile::TempDir,
@@ -43,6 +42,7 @@ pub struct Session {
     #[allow(dead_code)]
     created_at: Instant,
     last_used: Instant,
+    pub sandboxed: bool,
 }
 
 fn find_nsjail(nsjail_bin: &str) -> Result<String, SessionError> {
@@ -61,8 +61,40 @@ fn check_root() -> Result<(), SessionError> {
     Ok(())
 }
 
-fn nsjail_bindmount_arg(work_path: &str) -> String {
-    format!("{}:{}", work_path, constants::SANDBOX_WORK_DIR)
+fn build_nsjail_cmd(nsjail_path: &str, work_path: &str, config: &Config, wrapper: &str) -> Command {
+    let bindmount = format!("{}:{}", work_path, constants::SANDBOX_WORK_DIR);
+    let time_limit = config.sandbox_time_limit_secs.to_string();
+    let mem_limit = config.sandbox_memory_limit_bytes.to_string();
+
+    let mut cmd = Command::new(nsjail_path);
+    cmd.args([
+        constants::NSJAIL_MODE_ARG,
+        constants::NSJAIL_MODE_EXEC,
+        constants::NSJAIL_CHROOT_ARG,
+        constants::SANDBOX_CHROOT,
+        constants::NSJAIL_BINDMOUNT_ARG,
+        &bindmount,
+        constants::NSJAIL_CWD_ARG,
+        constants::SANDBOX_WORK_DIR,
+        constants::NSJAIL_DISABLE_PROC,
+        constants::NSJAIL_IFACE_NO_LO,
+        constants::NSJAIL_REALLY_QUIET,
+        constants::NSJAIL_TIME_LIMIT_ARG,
+        &time_limit,
+        constants::NSJAIL_MEMORY_LIMIT_ARG,
+        &mem_limit,
+        constants::NSJAIL_CMD_SEP,
+    ]);
+    cmd.arg(&config.sandbox_python)
+        .arg(constants::PYTHON_UNBUFFERED)
+        .arg(wrapper);
+    cmd
+}
+
+fn build_unsafe_cmd(python: &str, wrapper: &str) -> Command {
+    let mut cmd = Command::new(python);
+    cmd.arg(constants::PYTHON_UNBUFFERED).arg(wrapper);
+    cmd
 }
 
 impl Session {
@@ -71,45 +103,28 @@ impl Session {
         wrapper_path: &std::path::Path,
         config: &Config,
     ) -> Result<Self, SessionError> {
-        let nsjail_path = find_nsjail(&config.nsjail_path)?;
-        check_root()?;
-
         let work_dir = tempfile::tempdir()?;
-        let work_path = work_dir.path().to_string_lossy().to_string();
-        let bindmount = nsjail_bindmount_arg(&work_path);
+        let wrapper = wrapper_path.to_string_lossy().to_string();
 
-        let time_limit = config.sandbox_time_limit_secs.to_string();
-        let mem_limit = config.sandbox_memory_limit_bytes.to_string();
+        let (mut cmd, sandboxed) = if config.sandbox_enabled {
+            match try_start_sandbox(config, &work_dir, &wrapper) {
+                Ok(cmd) => (cmd, true),
+                Err(e) => {
+                    tracing::warn!("Sandbox unavailable ({}), falling back to unsafe mode", e);
+                    (build_unsafe_cmd(&config.system_python, &wrapper), false)
+                }
+            }
+        } else {
+            (build_unsafe_cmd(&config.system_python, &wrapper), false)
+        };
 
-        let mut cmd = Command::new(&nsjail_path);
-        cmd.args([
-            constants::NSJAIL_MODE_ARG,
-            constants::NSJAIL_MODE_EXEC,
-            constants::NSJAIL_CHROOT_ARG,
-            constants::SANDBOX_CHROOT,
-            constants::NSJAIL_BINDMOUNT_ARG,
-            &bindmount,
-            constants::NSJAIL_CWD_ARG,
-            constants::SANDBOX_WORK_DIR,
-            constants::NSJAIL_DISABLE_PROC,
-            constants::NSJAIL_IFACE_NO_LO,
-            constants::NSJAIL_REALLY_QUIET,
-            constants::NSJAIL_TIME_LIMIT_ARG,
-            &time_limit,
-            constants::NSJAIL_MEMORY_LIMIT_ARG,
-            &mem_limit,
-            constants::NSJAIL_CMD_SEP,
-        ]);
-        cmd.arg(&config.sandbox_python)
-            .arg(constants::PYTHON_UNBUFFERED)
-            .arg(wrapper_path);
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
 
-        cmd.stdin(std::process::Stdio::piped());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::null());
-        cmd.kill_on_drop(true);
-
-        let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().expect("stdin not captured");
         let stdout = child.stdout.take().expect("stdout not captured");
 
@@ -121,6 +136,7 @@ impl Session {
             stdout_reader: Some(BufReader::new(stdout)),
             created_at: Instant::now(),
             last_used: Instant::now(),
+            sandboxed,
         })
     }
 
@@ -138,7 +154,10 @@ impl Session {
             .await?;
         stdin.flush().await?;
 
-        let reader = self.stdout_reader.as_mut().ok_or(SessionError::SessionDied)?;
+        let reader = self
+            .stdout_reader
+            .as_mut()
+            .ok_or(SessionError::SessionDied)?;
         let mut line = String::new();
         reader.read_line(&mut line).await?;
 
@@ -177,6 +196,17 @@ impl Session {
     pub fn idle_seconds(&self) -> u64 {
         self.last_used.elapsed().as_secs()
     }
+}
+
+fn try_start_sandbox(
+    config: &Config,
+    work_dir: &tempfile::TempDir,
+    wrapper: &str,
+) -> Result<Command, SessionError> {
+    let nsjail_path = find_nsjail(&config.nsjail_path)?;
+    check_root()?;
+    let work_path = work_dir.path().to_string_lossy().to_string();
+    Ok(build_nsjail_cmd(&nsjail_path, &work_path, config, wrapper))
 }
 
 impl Drop for Session {
@@ -273,10 +303,65 @@ pub async fn get_python_info(system_python: &str) -> serde_json::Value {
     }
 }
 
-fn truncate_str(s: String) -> String {
+pub fn truncate_str(s: String) -> String {
     if s.len() > constants::MAX_OUTPUT_BYTES {
         s[..constants::MAX_OUTPUT_BYTES].to_string()
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_within_limit() {
+        let result = truncate_str("hello".into());
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn truncate_exceeds_limit() {
+        let big = "x".repeat(constants::MAX_OUTPUT_BYTES + 100);
+        let result = truncate_str(big);
+        assert_eq!(result.len(), constants::MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn execution_output_truncation_flags() {
+        let output = ExecutionOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            more_input_needed: false,
+            truncated_stdout: true,
+            truncated_stderr: false,
+        };
+        assert!(output.truncated_stdout);
+        assert!(!output.truncated_stderr);
+    }
+
+    #[test]
+    fn pip_result_serialize_success() {
+        let result = PipResult {
+            returncode: Some(0),
+            stdout: Some("requests==2.28.0".into()),
+            stderr: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("returncode"));
+        assert!(json.contains("requests"));
+    }
+
+    #[test]
+    fn pip_result_serialize_error() {
+        let result = PipResult {
+            returncode: Some(-1),
+            stdout: None,
+            stderr: Some("pip: command not found".into()),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("returncode"));
+        assert!(json.contains("pip"));
     }
 }
