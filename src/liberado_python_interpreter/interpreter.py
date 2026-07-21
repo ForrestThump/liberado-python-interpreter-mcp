@@ -1,7 +1,6 @@
 import code
 import io
 import os
-import signal
 import subprocess
 import sys
 import threading

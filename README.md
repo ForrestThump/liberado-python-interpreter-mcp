@@ -74,8 +74,4 @@ python -m liberado_python_interpreter --http 8080
   -> {"session_id": "a1b2c3d4e5f6", "stdout": "6\n", "stderr": "", "created": false}
 ```
 
-Multi-line blocks (def, class, try/except) are supported and return `more_input_needed: true` when incomplete.
-
-## Security
-
-Python code runs in-process via `code.InteractiveInterpreter` — sessions have full access to the server's Python runtime. File operations are scoped to the server's working directory. Sessions auto-expire after 30 minutes of inactivity.
+Code runs in-process via `code.InteractiveInterpreter` with no sandbox — sessions have full access to the server's runtime, filesystem, and network. File reads/writes are unrestricted paths. Sessions auto-expire after 30 minutes of inactivity.

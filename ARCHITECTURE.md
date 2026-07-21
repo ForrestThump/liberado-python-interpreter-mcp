@@ -20,7 +20,7 @@ Each session wraps a `code.InteractiveInterpreter` from the Python stdlib:
 
 1. `execute_python(code, session_id=None)` — first call creates a session (returns the ID), subsequent calls reuse it
 2. Namespace persists across calls within a session: imports, variables, functions all survive
-3. Multi-line code (def, class, try/except) is handled by `runsource` — incomplete blocks return `more_input_needed: true`
+3. Compound statements (def, class, for, try/except) are tried in `"single"` mode first, then retried with `"exec"` if `runsource` signals incomplete input. Only genuinely incomplete code returns `more_input_needed: true`.
 4. Sessions idle for >30 minutes are auto-cleaned on the next call
 5. `reset_python_session(session_id)` removes a session immediately
 6. `list_python_sessions()` shows active sessions, variable counts, idle times
@@ -35,7 +35,7 @@ Each session wraps a `code.InteractiveInterpreter` from the Python stdlib:
 
 ## File Operations
 
-Three tools provide scoped file access from the server's working directory:
+Three tools provide file access from the server's filesystem:
 
 - `read_file(path)` — read any text file
 - `write_file(path, content)` — create or overwrite, auto-creates parent dirs
