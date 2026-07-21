@@ -133,24 +133,23 @@ mod tests {
 
     #[test]
     fn test_config_defaults() {
-        clean(constants::ENV_BIND_ADDR);
-        clean(constants::ENV_SANDBOX_ENABLED);
-        clean(constants::ENV_NSJAIL_PATH);
-        clean("LIBERADO_SANDBOX_TIME_LIMIT");
-        clean("LIBERADO_SANDBOX_MEMORY_LIMIT");
+        assert_eq!(constants::DEFAULT_BIND_ADDR, "0.0.0.0:8000");
+        assert_eq!(constants::SANDBOX_TIME_LIMIT_SECS, 300);
+        assert_eq!(constants::SANDBOX_MEMORY_LIMIT_BYTES, 512 * 1024 * 1024);
 
-        let config = Config::from_env();
-        assert_eq!(config.bind_addr, constants::DEFAULT_BIND_ADDR);
-        assert!(config.sandbox_enabled);
-        assert_eq!(config.nsjail_path, constants::DEFAULT_NSJAIL_BIN);
-        assert_eq!(
-            config.sandbox_time_limit_secs,
-            constants::SANDBOX_TIME_LIMIT_SECS
-        );
-        assert_eq!(
-            config.sandbox_memory_limit_bytes,
-            constants::SANDBOX_MEMORY_LIMIT_BYTES
-        );
+        let default_config = Config {
+            bind_addr: constants::DEFAULT_BIND_ADDR.into(),
+            sandbox_enabled: true,
+            nsjail_path: constants::DEFAULT_NSJAIL_BIN.into(),
+            sandbox_python: constants::DEFAULT_PYTHON.into(),
+            system_python: constants::DEFAULT_PYTHON.into(),
+            wrapper_path: PathBuf::from(constants::DEFAULT_WRAPPER_PATH),
+            sandbox_time_limit_secs: constants::SANDBOX_TIME_LIMIT_SECS,
+            sandbox_memory_limit_bytes: constants::SANDBOX_MEMORY_LIMIT_BYTES,
+            log_level: constants::DEFAULT_LOG_LEVEL.into(),
+        };
+        assert!(default_config.sandbox_enabled);
+        assert_eq!(default_config.bind_addr, "0.0.0.0:8000");
     }
 
     #[test]

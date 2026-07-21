@@ -22,6 +22,12 @@ COMPILE_SINGLE = "single"
 COMPILE_EXEC = "exec"
 COMPILE_FILENAME = "<sandbox>"
 
+PACKAGES_DIR = "/work/packages"
+
+import os
+if os.path.isdir(PACKAGES_DIR):
+    sys.path.insert(0, PACKAGES_DIR)
+
 _interpreter = code.InteractiveInterpreter()
 
 

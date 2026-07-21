@@ -38,16 +38,21 @@ impl InterpreterServer {
         let created = !sessions.contains_key(&sid);
 
         if created {
+            tracing::info!(session_id = %sid, "Creating session");
             let session = sandbox::Session::new(sid.clone(), &self.wrapper_path, &self.config)
                 .map_err(|e| {
+                    tracing::error!(session_id = %sid, error = %e, "Failed to create session");
                     McpError::internal(format!("Failed to create sandbox session: {e}"))
                 })?;
             sessions.insert(sid.clone(), session);
+        } else {
+            tracing::debug!(session_id = %sid, "Reusing existing session");
         }
 
-        let session = sessions
-            .get_mut(&sid)
-            .ok_or_else(|| McpError::internal("Session disappeared".to_string()))?;
+        let session = sessions.get_mut(&sid).ok_or_else(|| {
+            tracing::error!(session_id = %sid, "Session disappeared during execution");
+            McpError::internal("Session disappeared".to_string())
+        })?;
 
         match session.execute(&code).await {
             Ok(output) => {
@@ -69,6 +74,7 @@ impl InterpreterServer {
                 Ok(result.to_string())
             }
             Err(e) => {
+                tracing::warn!(session_id = %sid, error = %e, "Execution error");
                 if !created {
                     sessions.remove(&sid);
                 }
@@ -81,6 +87,11 @@ impl InterpreterServer {
     async fn reset_python_session(&self, session_id: String) -> McpResult<String> {
         let mut sessions = self.sessions.lock().await;
         let existed = sessions.remove(&session_id).is_some();
+        if existed {
+            tracing::info!(session_id = %session_id, "Session reset");
+        } else {
+            tracing::debug!(session_id = %session_id, "Session not found for reset");
+        }
         let result = serde_json::json!({
             constants::KEY_SESSION_ID: session_id,
             constants::KEY_RESET: existed,
@@ -98,11 +109,13 @@ impl InterpreterServer {
                 constants::KEY_SECONDS_IDLE: session.idle_seconds(),
             }));
         }
+        tracing::debug!(count = list.len(), "list_python_sessions");
         Ok(serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string()))
     }
 
     #[tool("Read a text file and return its contents.")]
     async fn read_file(&self, path: String) -> McpResult<String> {
+        tracing::debug!(path = %path, "read_file");
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
                 let truncated = content.len() > constants::MAX_OUTPUT_BYTES;
@@ -116,6 +129,7 @@ impl InterpreterServer {
                 Ok(result.to_string())
             }
             Err(e) => {
+                tracing::warn!(path = %path, error = %e, "read_file failed");
                 let result = serde_json::json!({
                     constants::KEY_PATH: &path,
                     constants::KEY_ERROR: e.to_string(),
@@ -127,12 +141,14 @@ impl InterpreterServer {
 
     #[tool("Write content to a file, creating parent directories as needed. Overwrites existing files.")]
     async fn write_file(&self, path: String, content: String) -> McpResult<String> {
+        tracing::debug!(path = %path, bytes = content.len(), "write_file");
         let parent = PathBuf::from(&path)
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
         if let Err(e) = tokio::fs::create_dir_all(&parent).await {
+            tracing::warn!(path = %path, error = %e, "write_file mkdir failed");
             let result = serde_json::json!({
                 constants::KEY_PATH: &path,
                 constants::KEY_ERROR: format!("Failed to create directory: {e}"),
@@ -150,6 +166,7 @@ impl InterpreterServer {
                 Ok(result.to_string())
             }
             Err(e) => {
+                tracing::warn!(path = %path, error = %e, "write_file failed");
                 let result = serde_json::json!({
                     constants::KEY_PATH: &path,
                     constants::KEY_ERROR: e.to_string(),
@@ -168,9 +185,11 @@ impl InterpreterServer {
         count: Option<usize>,
     ) -> McpResult<String> {
         let count = count.unwrap_or(1);
+        tracing::debug!(path = %path, find = %find, replace = %replace, count = count, "edit_file");
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) => {
+                tracing::warn!(path = %path, error = %e, "edit_file read failed");
                 let result = serde_json::json!({
                     constants::KEY_PATH: &path,
                     constants::KEY_ERROR: e.to_string(),
@@ -197,6 +216,7 @@ impl InterpreterServer {
         };
 
         if let Err(e) = tokio::fs::write(&path, &new_content).await {
+            tracing::warn!(path = %path, error = %e, "edit_file write failed");
             let result = serde_json::json!({
                 constants::KEY_PATH: &path,
                 constants::KEY_ERROR: e.to_string(),
@@ -213,9 +233,32 @@ impl InterpreterServer {
         Ok(result.to_string())
     }
 
-    #[tool("Install a Python package using pip. Accepts any pip-compatible specifier (name, name==version, etc.).")]
-    async fn install_package(&self, package: String) -> McpResult<String> {
-        let result = sandbox::run_pip_install(&package, &self.config.system_python).await;
+    #[tool("Install a Python package using pip. If session_id is provided, installs into that session's isolated packages directory (requires restarting the session). Without session_id, installs globally.")]
+    async fn install_package(
+        &self,
+        package: String,
+        session_id: Option<String>,
+    ) -> McpResult<String> {
+        let result = if let Some(ref sid) = session_id {
+            let sessions = self.sessions.lock().await;
+            match sessions.get(sid) {
+                Some(session) => {
+                    let target = session.packages_path();
+                    sandbox::run_pip_install_to_target(
+                        &package,
+                        &self.config.system_python,
+                        &target,
+                    )
+                    .await
+                }
+                None => {
+                    tracing::warn!(session_id = %sid, "Session not found, falling back to global install");
+                    sandbox::run_pip_install(&package, &self.config.system_python).await
+                }
+            }
+        } else {
+            sandbox::run_pip_install(&package, &self.config.system_python).await
+        };
         Ok(serde_json::to_string(&result)
             .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()))
     }
@@ -235,7 +278,12 @@ impl InterpreterServer {
 
     async fn cleanup_expired(&self) {
         let mut sessions = self.sessions.lock().await;
+        let before = sessions.len();
         sessions.retain(|_sid, session| session.idle_seconds() < constants::SESSION_IDLE_SECONDS);
+        let removed = before.saturating_sub(sessions.len());
+        if removed > 0 {
+            tracing::info!(removed = removed, "Cleaned up expired sessions");
+        }
     }
 }
 
@@ -420,6 +468,52 @@ mod tests {
         assert_eq!(value[constants::KEY_CREATED], false);
         let stdout = value[constants::PROTO_STDOUT].as_str().unwrap();
         assert!(stdout.contains("6"));
+
+        let _ = server
+            .call_tool(
+                "reset_python_session",
+                serde_json::json!({"session_id": &sid}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_scoped_pip_install() {
+        let server = InterpreterServer::new(test_config());
+        let ctx = RequestContext::stdio();
+
+        let result = server
+            .call_tool(
+                "execute_python",
+                serde_json::json!({"code": "x = 42"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let sid = value[constants::KEY_SESSION_ID]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let result = server
+            .call_tool(
+                "install_package",
+                serde_json::json!({"package": "six", "session_id": &sid}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let text = result.first_text().unwrap();
+        let pr: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert!(
+            pr["returncode"].is_number(),
+            "pip install should return a numeric exit code"
+        );
 
         let _ = server
             .call_tool(

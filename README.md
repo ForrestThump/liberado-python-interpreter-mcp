@@ -24,7 +24,7 @@ Tool | Description
 
 Tool | Description
 --- | ---
-`install_package` | Install a Python package via pip (accepts any pip-compatible specifier).
+`install_package` | Install a Python package via pip. Pass `session_id` to install into that session's isolated packages directory (use `--target` under the session's work dir, auto-added to `sys.path`). Omit `session_id` for a global install.
 `list_packages` | List all installed Python packages in JSON format.
 `get_python_info` | Get Python version, executable path, and platform.
 
@@ -88,6 +88,23 @@ Registered in OpenClaw and LibreChat as `liberado-python-interpreter-mcp` (strea
 > execute_python(code="sum(x)", session_id="...")
   -> {"session_id": "...", "created": false, "stdout": "6\n"}
 ```
+
+### Per-session Package Isolation
+
+Pass a `session_id` to `install_package` to install into that session only. Packages go to `<session_work_dir>/packages/` and are automatically added to `sys.path` by the sandbox wrapper.
+
+```
+> execute_python(code="import requests", session_id="abc")
+  -> {"stderr": "ModuleNotFoundError: ..."}
+
+> install_package(package="requests", session_id="abc")
+  -> {"returncode": 0}      # installed to session's packages dir only
+
+> execute_python(code="import requests; print(requests.__version__)", session_id="abc")
+  -> {"stdout": "2.32.4\n"}  # success — session restarted, picks up new path
+```
+
+Install without `session_id` for global packages available to all sessions.
 
 ## Configuration
 

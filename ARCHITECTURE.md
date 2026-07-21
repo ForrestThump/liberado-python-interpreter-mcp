@@ -64,6 +64,29 @@ The Rust server and Python wrapper communicate via newline-delimited JSON over p
 
 The `InteractiveInterpreter` inside nsjail processes code identically to the non-sandboxed path: `"single"` compile mode first, `"exec"` fallback for compound statements.
 
+## Per-Session Package Isolation
+
+Each session's work directory contains a `packages/` subdirectory. When `install_package(package, session_id)` is called:
+
+1. Server looks up the session by ID
+2. Runs `pip install --target <session_work_dir>/packages/ <package>`
+3. The sandbox wrapper adds `/work/packages` to `sys.path` on startup
+
+Packages installed with `session_id` are isolated to that session only. Installing without `session_id` (legacy) installs globally into the system Python.
+
+## Observability
+
+All operations are traced via the `tracing` crate at appropriate levels:
+
+| Level | Events |
+|---|---|
+| `INFO` | Session creation/destruction, pip installs, expired session cleanup, server startup |
+| `DEBUG` | Code execution previews, file I/O operations, session reuse, sandbox process teardown |
+| `WARN` | Sandbox fallback, execution errors, file I/O failures, pip failures, missing sessions |
+| `ERROR` | Session process death, session creation failures, pip command spawn failures |
+
+Set `RUST_LOG=debug` for detailed per-request traces.
+
 ## Tool Flow
 
 ```

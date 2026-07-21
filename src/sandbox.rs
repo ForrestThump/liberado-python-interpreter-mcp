@@ -243,34 +243,61 @@ pub struct PipResult {
 }
 
 pub async fn run_pip_install(package: &str, system_python: &str) -> PipResult {
-    match Command::new(system_python)
-        .args([
-            constants::PIP_MODULE,
-            constants::PIP_CMD,
-            constants::PIP_INSTALL,
-            package,
-        ])
-        .output()
-        .await
-    {
+    tracing::info!(package = %package, "pip install (global)");
+    pip_install_cmd(system_python, package, None).await
+}
+
+pub async fn run_pip_install_to_target(
+    package: &str,
+    system_python: &str,
+    target: &std::path::Path,
+) -> PipResult {
+    tracing::info!(package = %package, target = %target.display(), "pip install (session-scoped)");
+    pip_install_cmd(system_python, package, Some(target)).await
+}
+
+async fn pip_install_cmd(
+    system_python: &str,
+    package: &str,
+    target: Option<&std::path::Path>,
+) -> PipResult {
+    let mut cmd = Command::new(system_python);
+    cmd.args([
+        constants::PIP_MODULE,
+        constants::PIP_CMD,
+        constants::PIP_INSTALL,
+        package,
+    ]);
+    if let Some(t) = target {
+        cmd.arg("--target").arg(t);
+    }
+    match cmd.output().await {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let code = output.status.code();
+            if code != Some(0) {
+                tracing::warn!(package = %package, exit_code = ?code, "pip install failed");
+            }
             PipResult {
-                returncode: output.status.code(),
+                returncode: code,
                 stdout: Some(truncate_str(stdout)),
                 stderr: Some(truncate_str(stderr)),
             }
         }
-        Err(e) => PipResult {
-            returncode: Some(-1),
-            stdout: None,
-            stderr: Some(e.to_string()),
-        },
+        Err(e) => {
+            tracing::error!(package = %package, error = %e, "pip install command failed");
+            PipResult {
+                returncode: Some(-1),
+                stdout: None,
+                stderr: Some(e.to_string()),
+            }
+        }
     }
 }
 
 pub async fn run_pip_list(system_python: &str) -> PipResult {
+    tracing::debug!("pip list");
     match Command::new(system_python)
         .args([
             constants::PIP_MODULE,
@@ -298,6 +325,7 @@ pub async fn run_pip_list(system_python: &str) -> PipResult {
 }
 
 pub async fn get_python_info(system_python: &str) -> serde_json::Value {
+    tracing::debug!("get_python_info");
     match Command::new(system_python)
         .args([constants::PYTHON_C_ARG, constants::PYTHON_INFO_CODE])
         .output()
