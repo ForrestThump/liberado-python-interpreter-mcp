@@ -1,6 +1,27 @@
 import code, io, json, sys
 from contextlib import redirect_stderr, redirect_stdout
 
+CMD_EXEC = "exec"
+CMD_INFO = "info"
+CMD_RESET = "reset"
+CMD_ENV = "env"
+
+KEY_CMD = "cmd"
+KEY_CODE = "code"
+KEY_OK = "ok"
+KEY_STDOUT = "stdout"
+KEY_STDERR = "stderr"
+KEY_MORE_INPUT = "more_input_needed"
+KEY_ERROR = "error"
+KEY_VARS = "vars"
+KEY_VAR_COUNT = "var_count"
+KEY_VERSION = "version"
+KEY_PLATFORM = "platform"
+
+COMPILE_SINGLE = "single"
+COMPILE_EXEC = "exec"
+COMPILE_FILENAME = "<sandbox>"
+
 _interpreter = code.InteractiveInterpreter()
 
 
@@ -10,27 +31,54 @@ def handle_exec(code_str):
     more = False
     try:
         with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-            more = _interpreter.runsource(code_str, "<sandbox>", "single")
+            more = _interpreter.runsource(code_str, COMPILE_FILENAME, COMPILE_SINGLE)
             if more:
                 stderr_buf.truncate(0)
                 stderr_buf.seek(0)
-                more = _interpreter.runsource(code_str, "<sandbox>", "exec")
+                more = _interpreter.runsource(code_str, COMPILE_FILENAME, COMPILE_EXEC)
     except Exception as e:
         return {
-            "ok": True,
-            "stdout": stdout_buf.getvalue(),
-            "stderr": stderr_buf.getvalue() + "\n{}: {}".format(type(e).__name__, e),
-            "more_input_needed": False,
+            KEY_OK: True,
+            KEY_STDOUT: stdout_buf.getvalue(),
+            KEY_STDERR: stdout_buf.getvalue() + "\n{}: {}".format(type(e).__name__, e),
+            KEY_MORE_INPUT: False,
         }
     return {
-        "ok": True,
-        "stdout": stdout_buf.getvalue(),
-        "stderr": stderr_buf.getvalue(),
-        "more_input_needed": more,
+        KEY_OK: True,
+        KEY_STDOUT: stdout_buf.getvalue(),
+        KEY_STDERR: stderr_buf.getvalue(),
+        KEY_MORE_INPUT: more,
     }
 
 
-HANDLERS = {"exec": handle_exec}
+def handle_info():
+    return {
+        KEY_OK: True,
+        KEY_VARS: list(_interpreter.locals.keys())[:100],
+        KEY_VAR_COUNT: len(_interpreter.locals),
+    }
+
+
+def handle_reset():
+    global _interpreter
+    _interpreter = code.InteractiveInterpreter()
+    return {KEY_OK: True}
+
+
+def handle_env():
+    return {
+        KEY_OK: True,
+        KEY_VERSION: sys.version,
+        KEY_PLATFORM: sys.platform,
+    }
+
+
+HANDLERS = {
+    CMD_EXEC: handle_exec,
+    CMD_INFO: handle_info,
+    CMD_RESET: handle_reset,
+    CMD_ENV: handle_env,
+}
 
 
 def main():
@@ -42,12 +90,14 @@ def main():
             req = json.loads(line)
         except json.JSONDecodeError:
             continue
-        cmd = req.get("cmd", "")
+        cmd = req.get(KEY_CMD, "")
         handler = HANDLERS.get(cmd)
         if handler is None:
-            response = {"ok": False, "error": "unknown command: {}".format(cmd)}
+            response = {KEY_OK: False, KEY_ERROR: "unknown command: {}".format(cmd)}
+        elif cmd == CMD_EXEC:
+            response = handler(req.get(KEY_CODE, ""))
         else:
-            response = handler(req.get("code", ""))
+            response = handler()
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
 

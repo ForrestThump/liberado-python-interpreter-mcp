@@ -94,10 +94,13 @@ Registered in OpenClaw and LibreChat as `liberado-python-interpreter-mcp` (strea
 | Variable | Default | Description |
 |---|---|---|
 | `BIND_ADDR` | `0.0.0.0:8000` | HTTP listen address |
+| `RUST_LOG` | `info` | Tracing log level |
 | `NSJAIL_PATH` | `nsjail` | Path to nsjail binary |
 | `SANDBOX_PYTHON` | `python3` | Python executable inside sandbox |
 | `SYSTEM_PYTHON` | `python3` | Python for pip operations (outside sandbox) |
 | `LIBERADO_WRAPPER_PATH` | `sandbox/wrapper.py` | Path to the sandbox wrapper script |
+| `LIBERADO_SANDBOX_TIME_LIMIT` | `300` | Sandbox time limit in seconds |
+| `LIBERADO_SANDBOX_MEMORY_LIMIT` | `536870912` | Sandbox memory limit in bytes (512 MB) |
 
 ## License
 

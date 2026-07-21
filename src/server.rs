@@ -5,29 +5,29 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use turbomcp::prelude::*;
 
+use crate::config::Config;
+use crate::constants;
 use crate::sandbox;
 
 #[derive(Clone)]
 pub struct InterpreterServer {
+    config: Arc<Config>,
     sessions: Arc<Mutex<HashMap<String, sandbox::Session>>>,
     wrapper_path: Arc<PathBuf>,
 }
 
-#[turbomcp::server(name = "liberado-python-interpreter-mcp", version = "0.1.0")]
+#[turbomcp::server(
+    name = "liberado-python-interpreter-mcp",
+    version = "0.1.0"
+)]
 impl InterpreterServer {
-    pub fn new() -> Self {
-        let wrapper_path = std::env::var("LIBERADO_WRAPPER_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.join("sandbox/wrapper.py")))
-                    .unwrap_or_else(|| PathBuf::from("sandbox/wrapper.py"))
-            });
-
+    pub fn new(config: Config) -> Self {
+        let config = Arc::new(config);
+        let wrapper_path = Arc::new(config.wrapper_path.clone());
         Self {
+            config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            wrapper_path: Arc::new(wrapper_path),
+            wrapper_path,
         }
     }
 
@@ -47,31 +47,40 @@ impl InterpreterServer {
         if created {
             let session = sandbox::Session::new(
                 sid.clone(),
-                self.wrapper_path.clone(),
+                &self.wrapper_path,
+                &self.config,
             )
-            .map_err(|e| McpError::internal(format!("Failed to create sandbox session: {e}")))?;
+            .map_err(|e| {
+                McpError::internal(format!("Failed to create sandbox session: {e}"))
+            })?;
             sessions.insert(sid.clone(), session);
         }
 
-        let session = sessions.get_mut(&sid).ok_or_else(|| {
-            McpError::internal("Session disappeared".to_string())
-        })?;
+        let session = sessions
+            .get_mut(&sid)
+            .ok_or_else(|| McpError::internal("Session disappeared".to_string()))?;
 
         match session.execute(&code).await {
             Ok(output) => {
                 let mut result = serde_json::json!({
-                    "session_id": sid,
-                    "stdout": output.stdout,
-                    "stderr": output.stderr,
-                    "more_input_needed": output.more_input_needed,
-                    "created": created,
+                    constants::KEY_SESSION_ID: &sid,
+                    constants::PROTO_STDOUT: output.stdout,
+                    constants::PROTO_STDERR: output.stderr,
+                    constants::PROTO_MORE_INPUT: output.more_input_needed,
+                    constants::KEY_CREATED: created,
                 });
                 if let Some(m) = result.as_object_mut() {
                     if output.truncated_stdout {
-                        m.insert("truncated_stdout".into(), true.into());
+                        m.insert(
+                            constants::KEY_TRUNCATED_STDOUT.into(),
+                            true.into(),
+                        );
                     }
                     if output.truncated_stderr {
-                        m.insert("truncated_stderr".into(), true.into());
+                        m.insert(
+                            constants::KEY_TRUNCATED_STDERR.into(),
+                            true.into(),
+                        );
                     }
                 }
                 Ok(result.to_string())
@@ -90,8 +99,8 @@ impl InterpreterServer {
         let mut sessions = self.sessions.lock().await;
         let existed = sessions.remove(&session_id).is_some();
         let result = serde_json::json!({
-            "session_id": session_id,
-            "reset": existed,
+            constants::KEY_SESSION_ID: session_id,
+            constants::KEY_RESET: existed,
         });
         Ok(result.to_string())
     }
@@ -102,31 +111,32 @@ impl InterpreterServer {
         let mut list = Vec::new();
         for (sid, session) in sessions.iter() {
             list.push(serde_json::json!({
-                "session_id": sid,
-                "seconds_idle": session.idle_seconds(),
+                constants::KEY_SESSION_ID: sid,
+                constants::KEY_SECONDS_IDLE: session.idle_seconds(),
             }));
         }
-        Ok(serde_json::to_string(&list)
-            .unwrap_or_else(|_| "[]".to_string()))
+        Ok(serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string()))
     }
 
     #[tool("Read a text file and return its contents.")]
     async fn read_file(&self, path: String) -> McpResult<String> {
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
-                let truncated = content.len() > sandbox::MAX_OUTPUT_BYTES;
+                let truncated =
+                    content.len() > constants::MAX_OUTPUT_BYTES;
                 let result = serde_json::json!({
-                    "path": path,
-                    "content": &content[..content.len().min(sandbox::MAX_OUTPUT_BYTES)],
-                    "size_bytes": content.len(),
-                    "truncated": truncated,
+                    constants::KEY_PATH: &path,
+                    constants::KEY_CONTENT: &content
+                        [..content.len().min(constants::MAX_OUTPUT_BYTES)],
+                    constants::KEY_SIZE_BYTES: content.len(),
+                    constants::KEY_TRUNCATED: truncated,
                 });
                 Ok(result.to_string())
             }
             Err(e) => {
                 let result = serde_json::json!({
-                    "path": path,
-                    "error": e.to_string(),
+                    constants::KEY_PATH: &path,
+                    constants::KEY_ERROR: e.to_string(),
                 });
                 Ok(result.to_string())
             }
@@ -142,8 +152,8 @@ impl InterpreterServer {
 
         if let Err(e) = tokio::fs::create_dir_all(&parent).await {
             let result = serde_json::json!({
-                "path": path,
-                "error": format!("Failed to create directory: {e}"),
+                constants::KEY_PATH: &path,
+                constants::KEY_ERROR: format!("Failed to create directory: {e}"),
             });
             return Ok(result.to_string());
         }
@@ -151,16 +161,16 @@ impl InterpreterServer {
         match tokio::fs::write(&path, &content).await {
             Ok(_) => {
                 let result = serde_json::json!({
-                    "path": path,
-                    "written": true,
-                    "size_bytes": content.len(),
+                    constants::KEY_PATH: &path,
+                    constants::KEY_WRITTEN: true,
+                    constants::KEY_SIZE_BYTES: content.len(),
                 });
                 Ok(result.to_string())
             }
             Err(e) => {
                 let result = serde_json::json!({
-                    "path": path,
-                    "error": e.to_string(),
+                    constants::KEY_PATH: &path,
+                    constants::KEY_ERROR: e.to_string(),
                 });
                 Ok(result.to_string())
             }
@@ -180,9 +190,9 @@ impl InterpreterServer {
             Ok(c) => c,
             Err(e) => {
                 let result = serde_json::json!({
-                    "path": path,
-                    "error": e.to_string(),
-                    "replaced": 0,
+                    constants::KEY_PATH: &path,
+                    constants::KEY_ERROR: e.to_string(),
+                    constants::KEY_REPLACED: 0,
                 });
                 return Ok(result.to_string());
             }
@@ -190,9 +200,9 @@ impl InterpreterServer {
 
         if !content.contains(&find) {
             let result = serde_json::json!({
-                "path": path,
-                "error": "Find string not found in file",
-                "replaced": 0,
+                constants::KEY_PATH: &path,
+                constants::KEY_ERROR: constants::KEY_FIND_NOT_FOUND,
+                constants::KEY_REPLACED: 0,
             });
             return Ok(result.to_string());
         }
@@ -201,53 +211,51 @@ impl InterpreterServer {
             let r = content.matches(&find).count();
             (content.replace(&find, &replace), r)
         } else {
-            let mut n = 0;
-            let s = content.replacen(&find, &replace, count);
-            n = count.min(s.matches(&replace).count() - content.matches(&replace).count());
-            (s, n)
+            (content.replacen(&find, &replace, count), count)
         };
 
         if let Err(e) = tokio::fs::write(&path, &new_content).await {
             let result = serde_json::json!({
-                "path": path,
-                "error": e.to_string(),
-                "replaced": 0,
+                constants::KEY_PATH: &path,
+                constants::KEY_ERROR: e.to_string(),
+                constants::KEY_REPLACED: 0,
             });
             return Ok(result.to_string());
         }
 
         let result = serde_json::json!({
-            "path": path,
-            "replaced": replaced,
-            "size_bytes": new_content.len(),
+            constants::KEY_PATH: &path,
+            constants::KEY_REPLACED: replaced,
+            constants::KEY_SIZE_BYTES: new_content.len(),
         });
         Ok(result.to_string())
     }
 
     #[tool("Install a Python package using pip. Accepts any pip-compatible specifier (name, name==version, etc.).")]
     async fn install_package(&self, package: String) -> McpResult<String> {
-        let result = sandbox::run_pip_install(&package).await;
+        let result =
+            sandbox::run_pip_install(&package, &self.config.system_python).await;
         Ok(serde_json::to_string(&result)
             .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()))
     }
 
     #[tool("List all installed Python packages in JSON format.")]
     async fn list_packages(&self) -> McpResult<String> {
-        let result = sandbox::run_pip_list().await;
+        let result = sandbox::run_pip_list(&self.config.system_python).await;
         Ok(serde_json::to_string(&result)
             .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()))
     }
 
     #[tool("Get information about the Python runtime: version, executable path, platform.")]
     async fn get_python_info(&self) -> McpResult<String> {
-        let info = sandbox::get_python_info().await;
+        let info = sandbox::get_python_info(&self.config.system_python).await;
         Ok(info.to_string())
     }
 
     async fn cleanup_expired(&self) {
         let mut sessions = self.sessions.lock().await;
         sessions.retain(|_sid, session| {
-            session.idle_seconds() < sandbox::SESSION_IDLE_SECONDS
+            session.idle_seconds() < constants::SESSION_IDLE_SECONDS
         });
     }
 }

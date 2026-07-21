@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,8 +6,8 @@ use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-pub const MAX_OUTPUT_BYTES: usize = 50_000;
-pub const SESSION_IDLE_SECONDS: u64 = 1800;
+use crate::config::Config;
+use crate::constants;
 
 #[derive(Error, Debug)]
 pub enum SessionError {
@@ -46,14 +45,10 @@ pub struct Session {
     last_used: Instant,
 }
 
-fn find_nsjail() -> Result<String, SessionError> {
-    let nsjail_bin = std::env::var("NSJAIL_PATH").unwrap_or_else(|_| "nsjail".to_string());
-
-    if let Ok(path) = which::which(&nsjail_bin) {
-        return Ok(path.to_string_lossy().to_string());
-    }
-
-    Err(SessionError::NsjailNotFound(nsjail_bin))
+fn find_nsjail(nsjail_bin: &str) -> Result<String, SessionError> {
+    which::which(nsjail_bin)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|_| SessionError::NsjailNotFound(nsjail_bin.to_string()))
 }
 
 fn check_root() -> Result<(), SessionError> {
@@ -66,36 +61,48 @@ fn check_root() -> Result<(), SessionError> {
     Ok(())
 }
 
+fn nsjail_bindmount_arg(work_path: &str) -> String {
+    format!("{}:{}", work_path, constants::SANDBOX_WORK_DIR)
+}
+
 impl Session {
-    pub fn new(session_id: String, wrapper_path: Arc<PathBuf>) -> Result<Self, SessionError> {
-        let nsjail_path = find_nsjail()?;
+    pub fn new(
+        session_id: String,
+        wrapper_path: &std::path::Path,
+        config: &Config,
+    ) -> Result<Self, SessionError> {
+        let nsjail_path = find_nsjail(&config.nsjail_path)?;
         check_root()?;
 
         let work_dir = tempfile::tempdir()?;
         let work_path = work_dir.path().to_string_lossy().to_string();
-        let wrapper = wrapper_path.to_string_lossy().to_string();
-        let python = std::env::var("SANDBOX_PYTHON").unwrap_or_else(|_| "python3".to_string());
+        let bindmount = nsjail_bindmount_arg(&work_path);
+
+        let time_limit = config.sandbox_time_limit_secs.to_string();
+        let mem_limit = config.sandbox_memory_limit_bytes.to_string();
 
         let mut cmd = Command::new(&nsjail_path);
         cmd.args([
-            "--mode",
-            "exec",
-            "--chroot",
-            "/",
-            "--bindmount",
-            &format!("{}:/work", &work_path),
-            "--cwd",
-            "/work",
-            "--disable_proc",
-            "--iface_no_lo",
-            "--really_quiet",
-            "--time_limit",
-            "300",
-            "--cgroup_mem_max",
-            "536870912",
-            "--",
+            constants::NSJAIL_MODE_ARG,
+            constants::NSJAIL_MODE_EXEC,
+            constants::NSJAIL_CHROOT_ARG,
+            constants::SANDBOX_CHROOT,
+            constants::NSJAIL_BINDMOUNT_ARG,
+            &bindmount,
+            constants::NSJAIL_CWD_ARG,
+            constants::SANDBOX_WORK_DIR,
+            constants::NSJAIL_DISABLE_PROC,
+            constants::NSJAIL_IFACE_NO_LO,
+            constants::NSJAIL_REALLY_QUIET,
+            constants::NSJAIL_TIME_LIMIT_ARG,
+            &time_limit,
+            constants::NSJAIL_MEMORY_LIMIT_ARG,
+            &mem_limit,
+            constants::NSJAIL_CMD_SEP,
         ]);
-        cmd.arg(&python).arg("-u").arg(&wrapper);
+        cmd.arg(&config.sandbox_python)
+            .arg(constants::PYTHON_UNBUFFERED)
+            .arg(wrapper_path);
 
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
@@ -121,8 +128,8 @@ impl Session {
         self.last_used = Instant::now();
 
         let req = serde_json::json!({
-            "cmd": "exec",
-            "code": code,
+            constants::PROTO_CMD: constants::PROTO_EXEC,
+            constants::PROTO_CODE: code,
         });
 
         let stdin = self.stdin.as_mut().ok_or(SessionError::SessionDied)?;
@@ -141,17 +148,17 @@ impl Session {
 
         let resp: serde_json::Value = serde_json::from_str(&line)?;
         let stdout = resp
-            .get("stdout")
+            .get(constants::PROTO_STDOUT)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
         let stderr = resp
-            .get("stderr")
+            .get(constants::PROTO_STDERR)
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
         let more = resp
-            .get("more_input_needed")
+            .get(constants::PROTO_MORE_INPUT)
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -159,19 +166,11 @@ impl Session {
         let stderr_len = stderr.len();
 
         Ok(ExecutionOutput {
-            stdout: if stdout_len > MAX_OUTPUT_BYTES {
-                stdout[..MAX_OUTPUT_BYTES].to_string()
-            } else {
-                stdout
-            },
-            stderr: if stderr_len > MAX_OUTPUT_BYTES {
-                stderr[..MAX_OUTPUT_BYTES].to_string()
-            } else {
-                stderr
-            },
+            stdout: truncate_str(stdout),
+            stderr: truncate_str(stderr),
             more_input_needed: more,
-            truncated_stdout: stdout_len > MAX_OUTPUT_BYTES,
-            truncated_stderr: stderr_len > MAX_OUTPUT_BYTES,
+            truncated_stdout: stdout_len > constants::MAX_OUTPUT_BYTES,
+            truncated_stderr: stderr_len > constants::MAX_OUTPUT_BYTES,
         })
     }
 
@@ -198,10 +197,14 @@ pub struct PipResult {
     pub stderr: Option<String>,
 }
 
-pub async fn run_pip_install(package: &str) -> PipResult {
-    let python = std::env::var("SYSTEM_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    match Command::new(&python)
-        .args(["-m", "pip", "install", package])
+pub async fn run_pip_install(package: &str, system_python: &str) -> PipResult {
+    match Command::new(system_python)
+        .args([
+            constants::PIP_MODULE,
+            constants::PIP_CMD,
+            constants::PIP_INSTALL,
+            package,
+        ])
         .output()
         .await
     {
@@ -210,8 +213,8 @@ pub async fn run_pip_install(package: &str) -> PipResult {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             PipResult {
                 returncode: output.status.code(),
-                stdout: Some(truncate(stdout)),
-                stderr: Some(truncate(stderr)),
+                stdout: Some(truncate_str(stdout)),
+                stderr: Some(truncate_str(stderr)),
             }
         }
         Err(e) => PipResult {
@@ -222,10 +225,14 @@ pub async fn run_pip_install(package: &str) -> PipResult {
     }
 }
 
-pub async fn run_pip_list() -> PipResult {
-    let python = std::env::var("SYSTEM_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    match Command::new(&python)
-        .args(["-m", "pip", "list", "--format=json"])
+pub async fn run_pip_list(system_python: &str) -> PipResult {
+    match Command::new(system_python)
+        .args([
+            constants::PIP_MODULE,
+            constants::PIP_CMD,
+            constants::PIP_LIST,
+            constants::PIP_FORMAT_ARG,
+        ])
         .output()
         .await
     {
@@ -245,29 +252,30 @@ pub async fn run_pip_list() -> PipResult {
     }
 }
 
-pub async fn get_python_info() -> serde_json::Value {
-    let python = std::env::var("SYSTEM_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let code = "import sys,json;print(json.dumps({'version':sys.version,'executable':sys.executable,'platform':sys.platform,'prefix':sys.prefix}))";
-
-    match Command::new(&python).args(["-c", code]).output().await {
+pub async fn get_python_info(system_python: &str) -> serde_json::Value {
+    match Command::new(system_python)
+        .args([constants::PYTHON_C_ARG, constants::PYTHON_INFO_CODE])
+        .output()
+        .await
+    {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             serde_json::from_str(&stdout).unwrap_or_else(|_| {
                 serde_json::json!({
-                    "error": "Failed to parse Python info",
-                    "raw": stdout,
+                    constants::KEY_ERROR: "Failed to parse Python info",
+                    constants::KEY_RAW: stdout,
                 })
             })
         }
         Err(e) => serde_json::json!({
-            "error": e.to_string(),
+            constants::KEY_ERROR: e.to_string(),
         }),
     }
 }
 
-fn truncate(s: String) -> String {
-    if s.len() > MAX_OUTPUT_BYTES {
-        s[..MAX_OUTPUT_BYTES].to_string()
+fn truncate_str(s: String) -> String {
+    if s.len() > constants::MAX_OUTPUT_BYTES {
+        s[..constants::MAX_OUTPUT_BYTES].to_string()
     } else {
         s
     }
