@@ -50,6 +50,9 @@ pub const KEY_RAW: &str = "raw";
 pub const KEY_ERROR: &str = "error";
 pub const KEY_FIND_NOT_FOUND: &str = "Find string not found in file";
 
+pub const PKGS_DIR: &str = "packages";
+pub const PKGS_SYS_PATH_ENTRY: &str = "/work/packages";
+
 pub const COMPILE_SINGLE: &str = "single";
 pub const COMPILE_EXEC: &str = "exec";
 pub const COMPILE_FILENAME: &str = "<sandbox>";

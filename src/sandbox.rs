@@ -106,15 +106,21 @@ impl Session {
         let work_dir = tempfile::tempdir()?;
         let wrapper = wrapper_path.to_string_lossy().to_string();
 
+        std::fs::create_dir_all(work_dir.path().join(constants::PKGS_DIR))?;
+
         let (mut cmd, sandboxed) = if config.sandbox_enabled {
             match try_start_sandbox(config, &work_dir, &wrapper) {
-                Ok(cmd) => (cmd, true),
+                Ok(cmd) => {
+                    tracing::info!(session_id = %session_id, sandboxed = true, "Session created (nsjail)");
+                    (cmd, true)
+                }
                 Err(e) => {
-                    tracing::warn!("Sandbox unavailable ({}), falling back to unsafe mode", e);
+                    tracing::warn!(session_id = %session_id, error = %e, "Sandbox unavailable, falling back to unsafe mode");
                     (build_unsafe_cmd(&config.system_python, &wrapper), false)
                 }
             }
         } else {
+            tracing::info!(session_id = %session_id, sandboxed = false, "Session created (unsafe)");
             (build_unsafe_cmd(&config.system_python, &wrapper), false)
         };
 
@@ -140,8 +146,15 @@ impl Session {
         })
     }
 
+    pub fn packages_path(&self) -> std::path::PathBuf {
+        self.work_dir.path().join(constants::PKGS_DIR)
+    }
+
     pub async fn execute(&mut self, code: &str) -> Result<ExecutionOutput, SessionError> {
         self.last_used = Instant::now();
+        let code_len = code.len();
+        let preview: String = code.chars().take(80).collect();
+        tracing::debug!(session_id = %self.session_id, code_len = code_len, "Executing code: {}...", preview);
 
         let req = serde_json::json!({
             constants::PROTO_CMD: constants::PROTO_EXEC,
@@ -162,6 +175,7 @@ impl Session {
         reader.read_line(&mut line).await?;
 
         if line.is_empty() {
+            tracing::error!(session_id = %self.session_id, "Session process died unexpectedly");
             return Err(SessionError::SessionDied);
         }
 
@@ -211,6 +225,7 @@ fn try_start_sandbox(
 
 impl Drop for Session {
     fn drop(&mut self) {
+        tracing::debug!(session_id = %self.session_id, "Session dropped");
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
         }
