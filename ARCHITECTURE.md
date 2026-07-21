@@ -2,73 +2,96 @@
 
 ## Overview
 
-`liberado-python-interpreter-mcp` exposes a persistent Python REPL and file editing tools via MCP. It uses [turbomcp](https://pypi.org/project/turbomcp/) for protocol handling.
+`liberado-python-interpreter-mcp` is a Rust MCP server that manages sandboxed Python REPL sessions. Each session wraps a `python3` process running inside nsjail, communicating via stdin/stdout JSON protocol over pipes.
 
 ## Components
 
 ```
-src/liberado_python_interpreter/
-├── __init__.py       # Package exports (mcp instance)
-├── __main__.py       # CLI entry point (stdio / HTTP modes)
-├── server.py         # Tool definitions via @mcp.tool() decorators
-└── interpreter.py    # Session REPL, file I/O, package management
+src/
+├── main.rs              # HTTP transport setup, tracing init
+├── lib.rs               # Module exports
+├── server.rs            # 9 MCP tools via #[turbomcp::server] + #[tool] macros
+└── sandbox.rs           # nsjail session lifecycle, pip subprocess calls
+sandbox/
+└── wrapper.py           # Python in-jail script; reads JSON from stdin, execs code, writes JSON to stdout
 ```
 
-## Session Model
-
-Each session wraps a `code.InteractiveInterpreter` from the Python stdlib:
-
-1. `execute_python(code, session_id=None)` — first call creates a session (returns the ID), subsequent calls reuse it
-2. Namespace persists across calls within a session: imports, variables, functions all survive
-3. Compound statements (def, class, for, try/except) are tried in `"single"` mode first, then retried with `"exec"` if `runsource` signals incomplete input. Only genuinely incomplete code returns `more_input_needed: true`.
-4. Sessions idle for >30 minutes are auto-cleaned on the next call
-5. `reset_python_session(session_id)` removes a session immediately
-6. `list_python_sessions()` shows active sessions, variable counts, idle times
-
-### Why `InteractiveInterpreter` instead of subprocess
-
-- **State**: namespace lives in-process, no serialization needed
-- **Speed**: no process spawn overhead per call
-- **Multi-line**: `runsource` handles compound statements correctly
-- **Output capture**: `redirect_stdout` / `redirect_stderr` wraps each call
-- **Downside**: scripts can affect the server process (infinite loops, memory)
-
-## File Operations
-
-Three tools provide file access from the server's filesystem:
-
-- `read_file(path)` — read any text file
-- `write_file(path, content)` — create or overwrite, auto-creates parent dirs
-- `edit_file(path, find, replace, count)` — string replacement editing
-
-Combined with sessions, the workflow is: write a `.py` file, `exec(open('script.py').read())` in the session, then incrementally refine.
-
-## Data Flow
+## Sandbox Architecture
 
 ```
-MCP client (stdio)
-    │ tools/call {"name": "execute_python", "arguments": {"code": "x=1", "session_id": "abc123"}}
+┌─────────────────────────────────────────┐
+│  Rust MCP Server (runs as root)         │
+│                                         │
+│  execute_python("code", "session_id")    │
+│    │                                     │
+│    │  SandboxSession.execute(code)       │
+│    │    │                                 │
+│    │    │  stdin ──► {"cmd":"exec",...}  │
+│    │    │                                │
+│    ▼    ▼                               │
+│  ┌──────────────────────────────────┐   │
+│  │  nsjail (CLONE_NEWNS/NET/PID)    │   │
+│  │  ┌────────────────────────────┐  │   │
+│  │  │  python3 -u wrapper.py     │  │   │
+│  │  │                            │  │   │
+│  │  │  InteractiveInterpreter    │  │   │
+│  │  │    runsource("single")     │  │   │
+│  │  │    fallback: "exec"        │  │   │
+│  │  │                            │  │   │
+│  │  │  stdout ──► JSON response  │  │   │
+│  │  └────────────────────────────┘  │   │
+│  │                                  │   │
+│  │  bindmount: /tmp/sess-xxx → /work│   │
+│  │  no /proc, no network            │   │
+│  │  mem: 512MB, time: 300s          │   │
+│  └──────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+```
+
+## Session Protocol
+
+The Rust server and Python wrapper communicate via newline-delimited JSON over pipes:
+
+**Request** (Rust → Python):
+```json
+{"cmd": "exec", "code": "x = 1"}
+```
+
+**Response** (Python → Rust):
+```json
+{"ok": true, "stdout": "", "stderr": "", "more_input_needed": false}
+```
+
+The `InteractiveInterpreter` inside nsjail processes code identically to the non-sandboxed path: `"single"` compile mode first, `"exec"` fallback for compound statements.
+
+## Tool Flow
+
+```
+MCP client (streamable HTTP)
+    │ tools/call {"name": "execute_python", "arguments": {"code":"x=1","session_id":"abc"}}
     ▼
-turbomcp dispatch
+turbomcp #[tool] dispatch
     │
     ▼
-server.execute_python(code, session_id)
+InterpreterServer::execute_python
+    │
+    ├─ session exists? → reuse child process
+    └─ new? → find nsjail, check root, create TempDir, spawn nsjail + python
     │
     ▼
-interpreter.execute_code(session_id, code)
+SandboxSession::execute(code)
     │
+    ├─ write JSON request to stdin
+    ├─ read JSON response from stdout
     ▼
-SessionManager.get_or_create("abc123")
-    │
-    ▼
-PythonSession.run("x=1")
-    │ uses code.InteractiveInterpreter.runsource()
-    │ captures stdout/stderr via redirect_*
-    ▼
-return {"session_id": "abc123", "stdout": "", "stderr": "", "more_input_needed": false, "created": false}
+return {"session_id":"abc","stdout":"","stderr":"","created":false}
 ```
 
 ## Dependencies
 
-- `turbomcp>=0.2.0` — MCP server framework, zero transitive deps
-- Python stdlib only for execution logic (`code`, `io`, `subprocess`, `threading`)
+- `turbomcp` — MCP server framework + HTTP transport (streamable HTTP)
+- `tokio` — async runtime, subprocess management, I/O
+- `serde` / `serde_json` — JSON serialization for the sandbox protocol
+- `tempfile` — session work directories
+- `uuid` — session ID generation
+- `nsjail` — external binary for Linux namespace isolation

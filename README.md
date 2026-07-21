@@ -1,6 +1,6 @@
 # liberado-python-interpreter-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server providing a persistent Python REPL with session management, file operations, and package management. Built in Python using [TurboMCP](https://pypi.org/project/turbomcp/).
+A [Model Context Protocol](https://modelcontextprotocol.io/) server providing a sandboxed persistent Python REPL with file operations and package management. Built in Rust using [TurboMCP](https://crates.io/crates/turbomcp). Each session runs inside an nsjail-isolated subprocess with no network, no `/proc`, and memory/time limits.
 
 ## Tools
 
@@ -8,70 +8,97 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) server providing a 
 
 Tool | Description
 --- | ---
-`execute_python` | Execute Python code in a persistent REPL session. Variables, imports, and functions survive across calls within the same session. Omit `session_id` to create a new session; pass one from a previous response to continue.
-`reset_python_session` | Destroy a session and release its namespace
-`list_python_sessions` | List all active sessions with variable counts and idle times (auto-cleans at 30 min idle)
+`execute_python` | Execute Python code in a persistent REPL session. Variables, imports, and functions survive across calls within the same session. Omit `session_id` to create a new session.
+`reset_python_session` | Destroy a session, tearing down its nsjail subprocess and temp directory.
+`list_python_sessions` | List all active sessions with idle times. Sessions idle for >30 minutes are auto-cleaned.
 
 ### File Operations
 
 Tool | Description
 --- | ---
-`read_file` | Read a text file from the server's working directory
-`write_file` | Write content to a file, creating parent directories as needed
-`edit_file` | Find-and-replace text in a file (`count=0` replaces all occurrences)
+`read_file` | Read a text file from the host filesystem.
+`write_file` | Write content to a file, creating parent directories as needed.
+`edit_file` | Find-and-replace text in a file. `count=0` replaces all occurrences.
 
-### Package Management
+### Package & Environment
 
 Tool | Description
 --- | ---
-`install_package` | Install a Python package via pip (accepts any pip-compatible specifier)
-`list_packages` | List all installed Python packages in JSON format
-`get_python_info` | Get Python runtime information (version, executable, platform)
+`install_package` | Install a Python package via pip (accepts any pip-compatible specifier).
+`list_packages` | List all installed Python packages in JSON format.
+`get_python_info` | Get Python version, executable path, and platform.
+
+## Sandbox
+
+Each `execute_python` session runs Python inside [nsjail](https://github.com/google/nsjail) with:
+
+| Constraint | Value |
+|---|---|
+| Filesystem | Writable only in the session's temp directory (`/work`). Host rootfs is read-only via `--chroot /`. |
+| Network | Disabled (`--iface_no_lo`) |
+| Process info | `/proc` unavailable (`--disable_proc`) |
+| Memory | 512 MB limit (`--cgroup_mem_max`) |
+| Time | 300s per nsjail subprocess lifetime |
+
+Sandbox mode requires running as root (or `CAP_SYS_ADMIN`) for Linux namespace creation. If nsjail is not found or the server is not root, session creation returns a clear error. Set `NSJAIL_PATH` to specify the nsjail binary location, or `SANDBOX_PYTHON` to use a different Python executable inside the sandbox.
 
 ## Running
 
-### Docker
+### Docker (recommended, includes nsjail)
 
 ```sh
 docker build -t liberado-python-interpreter-mcp .
-docker run -v ./workdir:/workdir -w /workdir liberado-python-interpreter-mcp
+docker run --privileged -p 8000:8000 liberado-python-interpreter-mcp
 ```
 
 ### Local development
 
 ```sh
-pip install -e .
-turbomcp serve src/liberado_python_interpreter/server.py
+cargo run
+# custom bind address:
+BIND_ADDR=127.0.0.1:9000 cargo run
 ```
 
-### HTTP API (debug)
+### Without sandbox (skip nsjail requirement)
 
 ```sh
-pip install -e .[http]
-python -m liberado_python_interpreter --http 8080
+cargo run --no-default-features
 ```
 
-## Claude Desktop / Cursor Configuration
+### Tests
 
-```json
-{
-  "mcpServers": {
-    "liberado-python-interpreter-mcp": {
-      "command": "turbomcp",
-      "args": ["serve", "/path/to/src/liberado_python_interpreter/server.py"]
-    }
-  }
-}
+```sh
+cargo test --lib
 ```
+
+## MCP endpoint
+
+```
+http://<host>:8000/
+```
+
+Registered in OpenClaw and LibreChat as `liberado-python-interpreter-mcp` (streamable-http).
 
 ## Session Usage
 
 ```
 > execute_python(code="x = [1, 2, 3]")
-  -> {"session_id": "a1b2c3d4e5f6", "stdout": "", "stderr": "", "created": true}
+  -> {"session_id": "...", "created": true, "stdout": ""}
 
-> execute_python(code="sum(x)", session_id="a1b2c3d4e5f6")
-  -> {"session_id": "a1b2c3d4e5f6", "stdout": "6\n", "stderr": "", "created": false}
+> execute_python(code="sum(x)", session_id="...")
+  -> {"session_id": "...", "created": false, "stdout": "6\n"}
 ```
 
-Code runs in-process via `code.InteractiveInterpreter` with no sandbox — sessions have full access to the server's runtime, filesystem, and network. File reads/writes are unrestricted paths. Sessions auto-expire after 30 minutes of inactivity.
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIND_ADDR` | `0.0.0.0:8000` | HTTP listen address |
+| `NSJAIL_PATH` | `nsjail` | Path to nsjail binary |
+| `SANDBOX_PYTHON` | `python3` | Python executable inside sandbox |
+| `SYSTEM_PYTHON` | `python3` | Python for pip operations (outside sandbox) |
+| `LIBERADO_WRAPPER_PATH` | `sandbox/wrapper.py` | Path to the sandbox wrapper script |
+
+## License
+
+MIT
