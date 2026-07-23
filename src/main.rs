@@ -1,5 +1,7 @@
+use std::net::SocketAddr;
+
 use liberado_python_interpreter_mcp::{config::Config, constants, server::InterpreterServer};
-use turbomcp::prelude::*;
+use turbomcp::http::{serve_http, HttpConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,14 +21,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.bind_addr,
     );
 
-    let bind_addr = config.bind_addr.clone();
-
-    InterpreterServer::new(config)
-        .builder()
-        .allow_any_origin(true)
-        .transport(Transport::http(&bind_addr))
-        .serve()
-        .await?;
+    let addr: SocketAddr = config
+        .bind_addr
+        .parse()
+        .expect("BIND_ADDR must be a valid SocketAddr");
+    let service = InterpreterServer::new(config).into_server().build();
+    serve_http(addr, service, HttpConfig::new()).await?;
 
     Ok(())
 }
