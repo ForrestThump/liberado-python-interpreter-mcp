@@ -1,0 +1,34 @@
+[package]
+name = "liberado-python-interpreter-mcp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+
+[[bin]]
+name = "liberado-python-interpreter-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "liberado_python_interpreter_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned to a rev: the 4.0 alpha API this server uses (VersionDispatcher, serve_http) is still
+# moving, and an unpinned git dep silently rebuilds against whatever HEAD is on deploy day.
+turbomcp = { git = "https://github.com/Epistates/turbomcp", rev = "64dc5e1396b86189b59bddd0db9e15da87f843c3", features = ["http"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+which = "7"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }
+tower = { version = "0.5", features = ["util"] }
