@@ -36,9 +36,13 @@ COPY --from=builder /app/target/release/liberado-python-interpreter-mcp /usr/loc
 COPY sandbox /usr/local/lib/liberado-python-interpreter-mcp/sandbox
 
 ARG APP_UID=10001
+# /sessions holds per-session work dirs (and session-scoped pip targets). It exists in the image
+# so that a named volume mounted over it inherits this ownership — Docker seeds an empty volume
+# from the image directory, and without that seed the volume would arrive root-owned and the
+# unprivileged server could not create a single session.
 RUN useradd --uid "$APP_UID" --create-home --shell /usr/sbin/nologin interpreter \
-    && mkdir -p /workspace \
-    && chown -R "$APP_UID:$APP_UID" /workspace "$VIRTUAL_ENV"
+    && mkdir -p /workspace /sessions \
+    && chown -R "$APP_UID:$APP_UID" /workspace /sessions "$VIRTUAL_ENV"
 
 # The rootfs is read-only in deployment, so pip's cache directory is unwritable; without this it
 # warns on every install. Nothing is lost — the cache could never have persisted anyway.
