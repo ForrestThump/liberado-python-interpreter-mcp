@@ -1,131 +1,134 @@
 # liberado-python-interpreter-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server providing a sandboxed persistent Python REPL with file operations and package management. Built in Rust using [TurboMCP](https://crates.io/crates/turbomcp). Each session runs inside an nsjail-isolated subprocess with no network, no `/proc`, and memory/time limits.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server offering persistent Python REPL sessions, workspace file operations, and package management. Written in Rust on [TurboMCP](https://crates.io/crates/turbomcp), served over streamable HTTP.
+
+Each session is a long-lived `python3` subprocess with its own namespace, its own package directory, and its own resource limits. Variables, imports, and definitions survive across calls.
 
 ## Tools
 
-### REPL & Sessions
+### REPL & sessions
 
-Tool | Description
---- | ---
-`execute_python` | Execute Python code in a persistent REPL session. Variables, imports, and functions survive across calls within the same session. Omit `session_id` to create a new session.
-`reset_python_session` | Destroy a session, tearing down its nsjail subprocess and temp directory.
-`list_python_sessions` | List all active sessions with idle times. Sessions idle for >30 minutes are auto-cleaned.
-
-### File Operations
-
-Tool | Description
---- | ---
-`read_file` | Read a text file from the host filesystem.
-`write_file` | Write content to a file, creating parent directories as needed.
-`edit_file` | Find-and-replace text in a file. `count=0` replaces all occurrences.
-
-### Package & Environment
-
-Tool | Description
---- | ---
-`install_package` | Install a Python package via pip. Pass `session_id` to install into that session's isolated packages directory (use `--target` under the session's work dir, auto-added to `sys.path`). Omit `session_id` for a global install.
-`list_packages` | List all installed Python packages in JSON format.
-`get_python_info` | Get Python version, executable path, and platform.
-
-## Sandbox
-
-Each `execute_python` session runs Python inside [nsjail](https://github.com/google/nsjail) with:
-
-| Constraint | Value |
+| Tool | Description |
 |---|---|
-| Filesystem | Writable only in the session's temp directory (`/work`). Host rootfs is read-only via `--chroot /`. |
-| Network | Disabled (`--iface_no_lo`) |
-| Process info | `/proc` unavailable (`--disable_proc`) |
-| Memory | 512 MB limit (`--cgroup_mem_max`) |
-| Time | 300s per nsjail subprocess lifetime |
+| `execute_python` | Run Python in a persistent session. Omit `session_id` to start one; pass it back to continue. |
+| `reset_python_session` | Destroy a session and its subprocess. |
+| `list_python_sessions` | Active sessions with age, idle time, and sandbox status. |
 
-Sandbox mode requires running as root (or `CAP_SYS_ADMIN`) for Linux namespace creation. If nsjail is not found or the server is not root, session creation returns a clear error. Set `NSJAIL_PATH` to specify the nsjail binary location, or `SANDBOX_PYTHON` to use a different Python executable inside the sandbox.
+### Files
+
+| Tool | Description |
+|---|---|
+| `read_file` | Read a text file from the workspace. |
+| `write_file` | Write a file, creating parent directories. |
+| `edit_file` | Find-and-replace. `count=0` replaces all; the response reports replacements *actually* made. |
+
+### Packages & environment
+
+| Tool | Description |
+|---|---|
+| `install_package` | pip install. With `session_id`, into that session's private directory; without, globally. |
+| `list_packages` | Installed packages as JSON. |
+| `get_python_info` | Version, executable, platform. |
+
+## Isolation model
+
+**The container is the sandbox.** This server executes model-authored code, so the boundary that matters is the one around the whole process:
+
+| Control | Mechanism |
+|---|---|
+| Privileges | Runs as uid 10001, `cap_drop: ALL`, `no-new-privileges` |
+| Filesystem | Read-only rootfs; only `/workspace` and a tmpfs `/tmp` are writable |
+| Memory / CPU | Container limits, plus `RLIMIT_AS` and `RLIMIT_CPU` on each worker |
+| Processes | Container `pids_limit`, plus `RLIMIT_NPROC` per worker |
+| Wall clock | `LIBERADO_EXEC_TIMEOUT` per call; the session is terminated when it trips |
+| File size | `RLIMIT_FSIZE` per worker |
+| Blast radius | Its own container — it mounts no vault and holds no credentials |
+
+nsjail-per-session is supported but **off by default**, because it is not packaged for Debian and needs `CAP_SYS_ADMIN` under Docker — granting that to weaken the outer boundary in order to add an inner one is a poor trade for this threat model. On a host that does have nsjail, set `LIBERADO_SANDBOX_ENABLED=1`; add `LIBERADO_SANDBOX_REQUIRED=1` to refuse to start rather than fall back. Every `execute_python` response carries a `sandboxed` field stating which mode actually ran.
+
+### Workspace containment
+
+The file tools run in the *server* process, not inside a session. Every path they receive is resolved against `LIBERADO_WORKSPACE_ROOTS` before any I/O: `..` is collapsed lexically, symlinks are resolved, and anything landing outside the roots is refused. Relative paths resolve against the first root, so `write_file("out.csv")` means `/workspace/out.csv`.
+
+This is what keeps the interpreter from becoming a way around a host system's own permission model — under Liberado, an agent denied a vault write must not be able to ask the interpreter to perform it instead.
 
 ## Running
 
-### Docker (recommended, includes nsjail)
+### Docker
 
 ```sh
 docker build -t liberado-python-interpreter-mcp .
-docker run --privileged -p 8000:8000 liberado-python-interpreter-mcp
+docker run --rm -p 8004:8000 \
+  --read-only --tmpfs /tmp --cap-drop ALL \
+  --security-opt no-new-privileges \
+  -v python-interpreter-workspace:/workspace \
+  liberado-python-interpreter-mcp
 ```
 
 ### Local development
 
 ```sh
-cargo run
-# custom bind address:
+just run                      # or: cargo run
 BIND_ADDR=127.0.0.1:9000 cargo run
+just test                     # cargo test
+just ci                       # lint + fmt + test + build
 ```
 
-### Without sandbox (skip nsjail requirement)
-
-```sh
-cargo run --no-default-features
-```
-
-### Tests
-
-```sh
-cargo test --lib
-```
-
-## MCP endpoint
-
-```
-http://<host>:8000/
-```
-
-Registered in OpenClaw and LibreChat as `liberado-python-interpreter-mcp` (streamable-http).
-
-## Session Usage
-
-```
-> execute_python(code="x = [1, 2, 3]")
-  -> {"session_id": "...", "created": true, "stdout": ""}
-
-> execute_python(code="sum(x)", session_id="...")
-  -> {"session_id": "...", "created": false, "stdout": "6\n"}
-```
-
-### Per-session Package Isolation
-
-Pass a `session_id` to `install_package` to install into that session only. Packages go to `<session_work_dir>/packages/` and are automatically added to `sys.path` by the sandbox wrapper.
-
-```
-> execute_python(code="import requests", session_id="abc")
-  -> {"stderr": "ModuleNotFoundError: ..."}
-
-> install_package(package="requests", session_id="abc")
-  -> {"returncode": 0}      # installed to session's packages dir only
-
-> execute_python(code="import requests; print(requests.__version__)", session_id="abc")
-  -> {"stdout": "2.32.4\n"}  # success — session restarted, picks up new path
-```
-
-Install without `session_id` for global packages available to all sessions.
+Locally, set `LIBERADO_WORKSPACE_ROOTS` to a directory you are happy for the tools to write to; it defaults to `/workspace`, which will not exist on a dev machine and is rejected at startup.
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
 | `BIND_ADDR` | `0.0.0.0:8000` | HTTP listen address |
-| `RUST_LOG` | `info` | Tracing log level |
-| `NSJAIL_PATH` | `nsjail` | Path to nsjail binary |
-| `SANDBOX_PYTHON` | `python3` | Python executable inside sandbox |
-| `SYSTEM_PYTHON` | `python3` | Python for pip operations (outside sandbox) |
-| `LIBERADO_WRAPPER_PATH` | `sandbox/wrapper.py` | Path to the sandbox wrapper script |
-| `LIBERADO_SANDBOX_TIME_LIMIT` | `300` | Sandbox time limit in seconds |
-| `LIBERADO_SANDBOX_MEMORY_LIMIT` | `536870912` | Sandbox memory limit in bytes (512 MB) |
-| `LIBERADO_SANDBOX_ENABLED` | `1` | Enable nsjail sandbox (`0`/`false`/`no` disables, runs Python directly) |
+| `RUST_LOG` | `info` | Tracing filter |
+| `LIBERADO_WORKSPACE_ROOTS` | `/workspace` | `:`-separated absolute roots the file tools may touch |
+| `LIBERADO_EXEC_TIMEOUT` | `120` | Seconds before a single execution is killed |
+| `LIBERADO_MAX_SESSIONS` | `32` | Concurrent sessions before new ones are refused |
+| `LIBERADO_SANDBOX_ENABLED` | `1` (`0` in the image) | Use nsjail per session when available |
+| `LIBERADO_SANDBOX_REQUIRED` | `0` | Fail instead of falling back when nsjail is unavailable |
+| `NSJAIL_PATH` | `nsjail` | nsjail binary |
+| `SANDBOX_PYTHON` | `python3` | Interpreter inside the jail |
+| `SYSTEM_PYTHON` | `python3` | Interpreter for sessions and pip (`/opt/venv/bin/python` in the image) |
+| `LIBERADO_WRAPPER_PATH` | next to the binary | Path to `sandbox/wrapper.py` |
+| `LIBERADO_SANDBOX_TIME_LIMIT` | `300` | nsjail `--time_limit`, seconds |
+| `LIBERADO_SANDBOX_MEMORY_LIMIT` | `536870912` | nsjail `--cgroup_mem_max`, bytes |
 
-## Running Without Sandbox
+Malformed configuration is a **startup failure**, not a silent default: an unparseable boolean, a zero timeout, a relative workspace root, or a missing wrapper script all refuse to boot rather than surfacing as confusing tool errors later.
 
-Set `LIBERADO_SANDBOX_ENABLED=0` to skip nsjail and run Python directly via subprocess. Useful for local development without root. The server also auto-falls back to unsafe mode if nsjail is missing or unavailable.
+## Session semantics
 
-```sh
-LIBERADO_SANDBOX_ENABLED=0 cargo run
+```
+> execute_python(code="x = [1, 2, 3]")
+  -> {"session_id": "…", "created": true, "sandboxed": false, "stdout": ""}
+
+> execute_python(code="sum(x)", session_id="…")
+  -> {"stdout": "6\n", "created": false}
+```
+
+- **Multi-statement input works**, and a trailing bare expression has its value echoed — `import math\nr = 2\nmath.pi * r ** 2` prints the area.
+- **Incomplete input** (`if True:`) returns `more_input_needed: true` rather than an error.
+- **Exceptions** come back as a traceback in `stderr`; the session stays alive.
+- **Timeouts** kill the worker and retire the session, because a late response would otherwise be read as the answer to somebody else's next call.
+- `input()` raises `EOFError`; stdin belongs to the session protocol.
+- Sessions idle for 30 minutes are reaped by a background task.
+
+### Per-session packages
+
+```
+> install_package(package="requests", session_id="abc")
+  -> {"returncode": 0}       # installed to that session's packages dir only
+
+> execute_python(code="import requests; requests.__version__", session_id="abc")
+  -> {"stdout": "'2.32.4'\n"}
+```
+
+The directory is on the worker's `sys.path` from startup, so no restart is needed. Package names that pip would read as options (`--index-url=…`) are rejected.
+
+## MCP endpoint
+
+```
+http://<host>:8000/
 ```
 
 ## License

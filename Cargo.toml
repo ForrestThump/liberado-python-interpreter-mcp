@@ -13,7 +13,9 @@ name = "liberado_python_interpreter_mcp"
 path = "src/lib.rs"
 
 [dependencies]
-turbomcp = { git = "https://github.com/Epistates/turbomcp", features = ["http"] }
+# Pinned to a rev: the 4.0 alpha API this server uses (VersionDispatcher, serve_http) is still
+# moving, and an unpinned git dep silently rebuilds against whatever HEAD is on deploy day.
+turbomcp = { git = "https://github.com/Epistates/turbomcp", rev = "64dc5e1396b86189b59bddd0db9e15da87f843c3", features = ["http"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -23,10 +25,6 @@ tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 which = "7"
-
-[features]
-default = []
-sandbox = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

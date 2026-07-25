@@ -2339,7 +2339,7 @@ dependencies = [
 [[package]]
 name = "turbomcp"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "schemars",
  "serde",
@@ -2359,7 +2359,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-client"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "async-trait",
  "eventsource-stream",
@@ -2380,7 +2380,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-codec"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "bytes",
  "serde",
@@ -2392,7 +2392,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-core"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "hashbrown 0.17.1",
  "serde",
@@ -2403,7 +2403,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-macros"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2413,7 +2413,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-protocol"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2423,7 +2423,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-server"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "async-trait",
  "base64",
@@ -2447,7 +2447,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-service"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "base64",
  "governor",
@@ -2464,7 +2464,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-transport-http"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "axum",
  "bytes",
@@ -2485,7 +2485,7 @@ dependencies = [
 [[package]]
 name = "turbomcp-transport-stdio"
 version = "4.0.0-alpha.1"
-source = "git+https://github.com/Epistates/turbomcp#64dc5e1396b86189b59bddd0db9e15da87f843c3"
+source = "git+https://github.com/Epistates/turbomcp?rev=64dc5e1396b86189b59bddd0db9e15da87f843c3#64dc5e1396b86189b59bddd0db9e15da87f843c3"
 dependencies = [
  "thiserror",
  "tokio",
